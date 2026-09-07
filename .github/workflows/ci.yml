@@ -101,7 +101,16 @@ jobs:
           lake build \
             PQXDHDocs.Chapters.Spec.Overview \
             PQXDHDocs.Chapters.Aeneas.Overview \
-            PQXDHDocs.Visuals.Style
+            PQXDHDocs.Visuals.Style \
+            PQXDHDocs.Contents
+
+      - name: Check the Blueprint generator entry point
+        if: steps.changes.outputs.docs == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          rm -rf _out/site
+          lake exe vbp discover | jq -e '.generator == "BlueprintMain.lean"'
+          lake exe vbp build
+          lake exe vbp check
 
       - name: Generate documentation site
         if: steps.changes.outputs.docs == 'true' || github.event_name == 'workflow_dispatch'
@@ -113,16 +122,18 @@ jobs:
       - name: Validate site output
         if: steps.changes.outputs.docs == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          test -f _out/site/html-multi/index.html
-          test -f _out/site/html-multi/blueprint-progress-history.json
+          test -f _out/deploy/html-multi/index.html
+          test -f _out/deploy/html-multi/blueprint-progress-history.json
           chapters=(
+            UAKE-Model
             PQXDH-Specification
             Aeneas-Extracted-PQXDH
           )
           for chapter in "${chapters[@]}"; do
-            test -f "_out/site/html-multi/$chapter/index.html"
-            test -f "_out/site/html-multi/$chapter/Dependency-Graph/index.html"
-            test -f "_out/site/html-multi/$chapter/Blueprint-Summary/index.html"
+            test -f "_out/deploy/html-multi/$chapter/index.html"
+            test -f "_out/deploy/html-multi/$chapter/Dependency-Graph/index.html"
+            test -f "_out/deploy/html-multi/$chapter/Blueprint-Summary/index.html"
+            lake exe vbp check --site "_out/deploy/html-multi/$chapter"
           done
 
       - name: Save Lake dependency builds
@@ -138,7 +149,7 @@ jobs:
         if: steps.changes.outputs.docs == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v4
         with:
-          path: _out/site/html-multi
+          path: _out/deploy/html-multi
 
   deploy:
     name: Deploy Pages

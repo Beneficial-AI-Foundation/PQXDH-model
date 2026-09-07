@@ -22,7 +22,7 @@ from pathlib import Path
 
 DEFAULT_DOCS_DIR = Path("docs/PQXDHDocs")
 DEFAULT_HISTORY = Path("docs/blueprint-progress-history.json")
-DEFAULT_SITE_DIR = Path("_out/site/html-multi")
+DEFAULT_SITE_DIR = Path("_out/deploy/html-multi")
 DEFAULT_REPO = "protoben/libsignal-verify"
 DEFAULT_PROJECT_END = "2027-01-28"
 SCHEMA_VERSION = 1

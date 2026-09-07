@@ -358,7 +358,7 @@ def copy_cross_preview_entries(
 def main() -> None:
     # Parse CLI options, repair HTML links, and copy needed preview entries.
     parser = argparse.ArgumentParser(description="Resolve cross-chapter Blueprint uses in a split Verso site.")
-    parser.add_argument("--site-dir", type=Path, default=Path("_out/site/html-multi"))
+    parser.add_argument("--site-dir", type=Path, default=Path("_out/deploy/html-multi"))
     parser.add_argument("--docs-dir", type=Path, default=Path("docs/PQXDHDocs/Chapters"))
     args = parser.parse_args()
 
