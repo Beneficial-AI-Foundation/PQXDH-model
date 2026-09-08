@@ -5,7 +5,8 @@ Verso can resolve `uses` references within one rendered manual, but our site is
 assembled from independently rendered chapter manuals. This script stitches those
 manuals back together by reading source `uses` metadata and rendered preview
 manifests, then replacing cross-chapter `[??]` placeholders in the final HTML.
-It also copies the needed preview entries into each chapter manifest so repaired
+It also copies the needed preview entries into each chapter manifest, together
+with their rendered HTML in `blueprint-html-cache.json`, so repaired
 cross-chapter links get the same hover previews as native same-chapter links.
 """
 
@@ -19,6 +20,7 @@ from pathlib import Path
 
 
 MANIFEST_PATH = "-verso-data/blueprint-manifest.json"
+HTML_CACHE_PATH = "-verso-data/blueprint-html-cache.json"
 CHAPTER_PREFIXES = {
     "PQXDH-Specification": "Spec",
     "Aeneas-Extracted-PQXDH": "Aeneas",
@@ -106,10 +108,10 @@ def link_base_dir(html_file: Path, text: str) -> Path:
     return html_file.parent / base_path
 
 
-def relative_href(site_dir: Path, link_base: Path, target: AtomTarget) -> str:
-    # Build a relative link from one rendered page to a target atom.
-    href, sep, fragment = target.href.partition("#")
-    target_path = site_dir / target.chapter / href
+def rebase_href(site_dir: Path, link_base: Path, source_chapter: str, source_href: str) -> str:
+    # Rebase a chapter-relative Verso href so it resolves from `link_base`.
+    href, sep, fragment = source_href.partition("#")
+    target_path = site_dir / source_chapter / href
     rel = os.path.relpath(target_path, link_base)
 
     # Directory-style Verso hrefs need the trailing slash before the fragment so
@@ -117,6 +119,11 @@ def relative_href(site_dir: Path, link_base: Path, target: AtomTarget) -> str:
     if href.endswith("/") and not rel.endswith("/"):
         rel += "/"
     return rel + (sep + fragment if sep else "")
+
+
+def relative_href(site_dir: Path, link_base: Path, target: AtomTarget) -> str:
+    # Build a relative link from one rendered page to a target atom.
+    return rebase_href(site_dir, link_base, target.chapter, target.href)
 
 
 def prefixed_title(target: AtomTarget) -> str:
@@ -257,9 +264,16 @@ def copy_cross_preview_entries(
     site_dir: Path,
     uses_by_label: dict[str, list[str]],
     targets: dict[str, AtomTarget],
-) -> int:
-    # Copy target preview manifest entries into chapters that reference them.
-    needed_by_chapter: dict[str, dict[str, dict]] = {}
+) -> tuple[int, int]:
+    # Copy target preview entries into chapters that reference them. Verso's
+    # runtime resolves a preview from two files, the manifest entry and its
+    # rendered HTML in `blueprint-html-cache.json`, and expects everything an
+    # entry points at (its embedded Lean code previews, its relations) to exist
+    # in the same chapter. A copy therefore brings its Lean code preview entries
+    # along, with both halves, gets chapter-root-relative hrefs like patched
+    # relations, and drops its own `uses`/`usedBy`/group relations: those point
+    # back into the defining chapter and are not navigable from a copy.
+    needed_by_chapter: dict[str, dict[str, AtomTarget]] = {}
     for label, deps in uses_by_label.items():
         source = targets.get(label)
         if not source:
@@ -268,35 +282,83 @@ def copy_cross_preview_entries(
             target = targets.get(dep)
             if not target or target.chapter == source.chapter:
                 continue
-            needed_by_chapter.setdefault(source.chapter, {})[target.key] = target.entry
+            needed_by_chapter.setdefault(source.chapter, {})[target.key] = target
+
+    source_manifests: dict[str, dict[str, dict]] = {}
+    source_caches: dict[str, dict[str, dict]] = {}
+
+    def indexed(path: Path, field: str) -> dict[str, dict]:
+        items = json.loads(path.read_text()).get(field, []) if path.exists() else []
+        return {item.get("key", ""): item for item in items if isinstance(item, dict)}
+
+    def source_entry(chapter: str, key: str) -> dict | None:
+        if chapter not in source_manifests:
+            source_manifests[chapter] = indexed(site_dir / chapter / MANIFEST_PATH, "previews")
+        return source_manifests[chapter].get(key)
+
+    def source_html(chapter: str, key: str) -> dict | None:
+        if chapter not in source_caches:
+            source_caches[chapter] = indexed(site_dir / chapter / HTML_CACHE_PATH, "entries")
+        return source_caches[chapter].get(key)
+
+    def detached_copy(entry: dict, link_base: Path, source_chapter: str) -> dict:
+        copied_entry = dict(entry)
+        copied_entry["splitPreviewCopy"] = True
+        if copied_entry.get("href"):
+            copied_entry["href"] = rebase_href(site_dir, link_base, source_chapter, copied_entry["href"])
+        copied_entry["uses"] = []
+        copied_entry["usedBy"] = []
+        copied_entry.pop("group", None)
+        return copied_entry
 
     copied = 0
-    for chapter, entries in sorted(needed_by_chapter.items()):
+    copied_html = 0
+    for chapter, chapter_targets in sorted(needed_by_chapter.items()):
         manifest = site_dir / chapter / MANIFEST_PATH
+        cache_path = site_dir / chapter / HTML_CACHE_PATH
         if not manifest.exists():
             continue
         data = json.loads(manifest.read_text())
         previews = data.setdefault("previews", [])
         existing = {entry.get("key", "") for entry in previews if isinstance(entry, dict)}
+        cache_data = json.loads(cache_path.read_text()) if cache_path.exists() else None
+        cache_entries = cache_data.setdefault("entries", []) if cache_data is not None else None
+        cache_existing = {
+            entry.get("key", "") for entry in (cache_entries or []) if isinstance(entry, dict)
+        }
         changed = False
-        for key, entry in sorted(entries.items()):
-            if key in existing:
-                continue
-            copied_entry = dict(entry)
-            copied_entry["splitPreviewCopy"] = True
-            previews.append(copied_entry)
-            existing.add(key)
-            copied += 1
-            changed = True
+        cache_changed = False
+        link_base = site_dir / chapter
+        for key, target in sorted(chapter_targets.items()):
+            keys = [key, *target.entry.get("leanCodePreviewKeys", [])]
+            for copy_key in keys:
+                if copy_key not in existing:
+                    entry = target.entry if copy_key == key else source_entry(target.chapter, copy_key)
+                    if entry is None:
+                        continue
+                    previews.append(detached_copy(entry, link_base, target.chapter))
+                    existing.add(copy_key)
+                    copied += 1
+                    changed = True
+                if cache_entries is not None and copy_key not in cache_existing:
+                    html = source_html(target.chapter, copy_key)
+                    if html is None:
+                        continue
+                    cache_entries.append(dict(html))
+                    cache_existing.add(copy_key)
+                    copied_html += 1
+                    cache_changed = True
         if changed:
             manifest.write_text(json.dumps(data, ensure_ascii=False))
-    return copied
+        if cache_changed:
+            cache_path.write_text(json.dumps(cache_data, ensure_ascii=False))
+    return copied, copied_html
 
 
 def main() -> None:
     # Parse CLI options, repair HTML links, and copy needed preview entries.
     parser = argparse.ArgumentParser(description="Resolve cross-chapter Blueprint uses in a split Verso site.")
-    parser.add_argument("--site-dir", type=Path, default=Path("_out/site/html-multi"))
+    parser.add_argument("--site-dir", type=Path, default=Path("_out/deploy/html-multi"))
     parser.add_argument("--docs-dir", type=Path, default=Path("docs/PQXDHDocs/Chapters"))
     args = parser.parse_args()
 
@@ -308,11 +370,11 @@ def main() -> None:
         if html_file == args.site_dir / "index.html":
             continue
         changed += process_html_file(html_file, args.site_dir, uses_by_label, targets)
-    copied = copy_cross_preview_entries(args.site_dir, uses_by_label, targets)
+    copied, copied_html = copy_cross_preview_entries(args.site_dir, uses_by_label, targets)
     print(
         f"Resolved {changed} split Blueprint uses link(s); "
         f"patched {patched} manifest relation(s); "
-        f"copied {copied} preview entrie(s)."
+        f"copied {copied} preview entrie(s) and {copied_html} HTML cache entrie(s)."
     )
 
 

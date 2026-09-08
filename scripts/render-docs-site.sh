@@ -3,10 +3,13 @@ set -euo pipefail
 
 # Render each documentation chapter as its own Verso manual and combine the
 # outputs into one static site.
-output_root="_out/site"
+output_root="_out/deploy"
 
-# By default, render the deployable site under `_out/site`. Pass
+# By default, render the deployable site under `_out/deploy`. Pass
 # `--output <dir>` for local preview builds in a separate directory.
+# `_out/site` belongs to `lake exe vbp build` (see BlueprintMain.lean), which
+# renders the unified manual there for Blueprint tooling; the two layouts must
+# not share a root, or tools that scan `_out/site` would merge both renders.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output)
